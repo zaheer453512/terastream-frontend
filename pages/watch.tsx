@@ -15,18 +15,30 @@ interface FileData {
   subtitles?: { label: string; lang: string; url: string }[];
 }
 
+function detectMimeType(url: string): string {
+  if (!url) return 'video/mp4';
+  const clean = url.split('?')[0].toLowerCase();
+  if (clean.endsWith('.m3u8')) return 'application/x-mpegURL';
+  if (clean.endsWith('.mpd'))  return 'application/dash+xml';
+  if (clean.endsWith('.webm')) return 'video/webm';
+  if (clean.endsWith('.mkv'))  return 'video/x-matroska';
+  if (clean.endsWith('.mov'))  return 'video/quicktime';
+  return 'video/mp4';
+}
+
 export default function WatchPage() {
   const router = useRouter();
   const { url } = router.query;
-  const playerRef = useRef<HTMLDivElement>(null);
-  const playerInstance = useRef<any>(null);
+  const playerRef  = useRef<HTMLDivElement>(null);
+  const playerInst = useRef<any>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
 
-  // Fetch video data from backend
+  // ── Fetch video metadata ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!url) return;
+
     const fetchData = async () => {
       setLoading(true);
       setError('');
@@ -36,80 +48,131 @@ export default function WatchPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: decodeURIComponent(url as string) }),
         });
-        if (!res.ok) throw new Error('Failed to resolve link');
-        const data = await res.json();
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.message || `Error ${res.status}: Failed to resolve link`);
+        }
+
+        const data: FileData = await res.json();
+
+        if (!data.streamUrl && !data.downloadUrl) {
+          throw new Error('No playable URL returned. The link may have expired.');
+        }
+
         setFileData(data);
-      } catch (err: any) {
-        setError(err.message || 'Unable to load video. Please check your link.');
+      } catch (err: unknown) {
+        const msg = err instanceof Error
+          ? err.message
+          : 'Unable to load video. Please check your link.';
+        setError(msg);
       } finally {
         setLoading(false);
       }
     };
+
     fetchData();
   }, [url]);
 
-  // Initialize Video.js player
+  // ── Initialise Video.js player ────────────────────────────────────────────────
   useEffect(() => {
     if (!fileData || !playerRef.current) return;
 
+    // Use streamUrl if available, fall back to downloadUrl.
+    // Pass the direct URL — never wrap in a proxy for streaming.
+    const playbackUrl = fileData.streamUrl || fileData.downloadUrl;
+    const mimeType    = detectMimeType(playbackUrl);
+
+    const sources = [
+      { src: playbackUrl, type: mimeType },
+      // If HLS detected, also offer mp4 as browser fallback
+      ...(mimeType === 'application/x-mpegURL'
+        ? [{ src: playbackUrl, type: 'video/mp4' }]
+        : []),
+    ];
+
     const initPlayer = async () => {
-      const videojs = (await import('video.js')).default;
-      if (playerInstance.current) {
-        playerInstance.current.dispose();
+      try {
+        const videojs = (await import('video.js')).default;
+
+        if (playerInst.current) {
+          playerInst.current.dispose();
+          playerInst.current = null;
+        }
+
+        const videoEl = document.createElement('video');
+        videoEl.className   = 'video-js vjs-big-play-centered vjs-theme-custom';
+        videoEl.controls    = true;
+        videoEl.preload     = 'auto';
+        videoEl.crossOrigin = 'anonymous';
+        if (fileData.thumbnail) videoEl.poster = fileData.thumbnail;
+
+        playerRef.current!.innerHTML = '';
+        playerRef.current!.appendChild(videoEl);
+
+        playerInst.current = videojs(videoEl, {
+          autoplay:      false,
+          controls:      true,
+          responsive:    true,
+          fluid:         true,
+          playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
+          html5: {
+            vhs: {
+              overrideNative:           true,
+              enableLowInitialPlaylist: true,
+              handlePartialData:        true,
+            },
+            nativeVideoTracks: false,
+            nativeAudioTracks: false,
+            nativeTextTracks:  false,
+          },
+          sources,
+          tracks: (fileData.subtitles ?? []).map(s => ({
+            kind:    'subtitles' as const,
+            src:     s.url,
+            srclang: s.lang,
+            label:   s.label,
+          })),
+        });
+
+        // Surface player errors to the UI instead of silent black screen
+        playerInst.current.on('error', () => {
+          const vjsErr = playerInst.current?.error();
+          const messages: Record<number, string> = {
+            1: 'Playback was aborted.',
+            2: 'Network error while loading the video.',
+            3: 'Video decoding failed — format may not be supported by your browser.',
+            4: 'This video format is not supported.',
+          };
+          setError(
+            messages[vjsErr?.code ?? 0] ??
+            'The video could not be played. Please try downloading instead.'
+          );
+        });
+
+      } catch (initErr) {
+        console.error('Video.js init error:', initErr);
+        setError('Failed to initialise video player. Please try refreshing.');
       }
-
-      // Create video element
-      const videoEl = document.createElement('video');
-      videoEl.className = 'video-js vjs-big-play-centered vjs-theme-custom';
-      videoEl.setAttribute('controls', '');
-      videoEl.setAttribute('preload', 'auto');
-      if (fileData.thumbnail) videoEl.setAttribute('poster', fileData.thumbnail);
-      playerRef.current!.innerHTML = '';
-      playerRef.current!.appendChild(videoEl);
-
-      playerInstance.current = videojs(videoEl, {
-        autoplay: false,
-        controls: true,
-        responsive: true,
-        fluid: true,
-        html5: {
-          vhs: { overrideNative: true },
-        },
-        playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
-sources: [
-  {
-    src: `${process.env.NEXT_PUBLIC_API_URL}/api/download?id=${encodeURIComponent(fileData.streamUrl)}`,
-    type: fileData.streamUrl.includes('.m3u8')
-      ? 'application/x-mpegURL'
-      : 'video/mp4',
-  },
-],        tracks: fileData.subtitles?.map(s => ({
-          kind: 'subtitles',
-          src: s.url,
-          srclang: s.lang,
-          label: s.label,
-        })) || [],
-      });
     };
 
     initPlayer();
 
     return () => {
-      if (playerInstance.current) {
-        playerInstance.current.dispose();
-        playerInstance.current = null;
+      if (playerInst.current) {
+        playerInst.current.dispose();
+        playerInst.current = null;
       }
     };
   }, [fileData]);
 
-  const formatBytes = (bytes: string) => bytes;
-
   return (
     <>
       <Head>
-        <title>{fileData ? `${fileData.title} — TeraStream` : 'Loading... — TeraStream'}</title>
+        <title>
+          {fileData ? `${fileData.title} — TeraStream` : 'Loading... — TeraStream'}
+        </title>
         <meta name="robots" content="noindex" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
       </Head>
 
@@ -118,9 +181,10 @@ sources: [
       <main className="player-page">
         <div className="player-inner">
 
-          {/* Ad slot above player */}
+          {/* Ad — above player */}
           <div className="ad-slot ad-slot-banner">Advertisement</div>
 
+          {/* Loading */}
           {loading && (
             <div className="loading-state">
               <div className="spinner" />
@@ -128,25 +192,38 @@ sources: [
             </div>
           )}
 
-          {error && (
+          {/* Error */}
+          {error && !loading && (
             <div className="error-state">
               <div className="error-icon">
-                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                  <circle cx="24" cy="24" r="22" stroke="#FF5B5B" strokeWidth="2"/>
-                  <path d="M24 14V26M24 32V34" stroke="#FF5B5B" strokeWidth="2.5" strokeLinecap="round"/>
+                <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
+                  <circle cx="26" cy="26" r="24" stroke="#FF5B5B" strokeWidth="2"/>
+                  <path d="M26 14V28M26 34V36" stroke="#FF5B5B" strokeWidth="2.5" strokeLinecap="round"/>
                 </svg>
               </div>
-              <h3 style={{ color: 'var(--text-primary)', marginBottom: '8px', fontSize: '18px' }}>Unable to Load Video</h3>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>{error}</p>
+              <h3 style={{ color: 'var(--text-primary)', marginBottom: '8px', fontSize: '18px' }}>
+                Unable to Load Video
+              </h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>{error}</p>
+              {fileData?.downloadUrl && (
+                <a
+                  href={`/api/download?id=${encodeURIComponent(fileData.downloadUrl)}`}
+                  className="btn-secondary"
+                  style={{ marginBottom: '12px', display: 'inline-flex' }}
+                  download
+                >
+                  Download Instead
+                </a>
+              )}
               <button className="btn-primary" onClick={() => router.push('/')}>
                 ← Try Another Link
               </button>
             </div>
           )}
 
-          {fileData && !loading && (
+          {/* Player + info */}
+          {fileData && !loading && !error && (
             <>
-              {/* Player */}
               <div className="player-wrapper" ref={playerRef} />
 
               {/* File info */}
@@ -183,17 +260,19 @@ sources: [
                 </div>
               </div>
 
-              {/* Ad slot below metadata */}
+              {/* Ad — below metadata */}
               <div className="ad-slot ad-slot-banner">Advertisement</div>
 
               {/* Download bar */}
               <div className="download-bar">
                 <div className="download-info">
                   <strong style={{ color: 'var(--text-primary)' }}>Download File</strong>
-                  <span style={{ marginLeft: '12px' }}>{fileData.title}</span>
+                  <span style={{ marginLeft: '12px', color: 'var(--text-secondary)' }}>
+                    {fileData.title}
+                  </span>
                 </div>
                 <a
-                  href={`/api/download?id=${encodeURIComponent(fileData.downloadUrl)}`}
+                  href={`/api/download?id=${encodeURIComponent(fileData.downloadUrl || fileData.streamUrl)}`}
                   className="btn-primary"
                   download
                 >
@@ -206,6 +285,7 @@ sources: [
               </div>
             </>
           )}
+
         </div>
       </main>
 
@@ -213,23 +293,39 @@ sources: [
 
       <style jsx>{`
         .video-js {
-          width: 100%;
-          height: 100%;
+          width: 100% !important;
+          height: 100% !important;
         }
         .vjs-theme-custom .vjs-big-play-button {
-          background: rgba(108,71,255,0.9) !important;
+          background: rgba(108, 71, 255, 0.9) !important;
           border-radius: 50% !important;
-          width: 70px !important;
-          height: 70px !important;
-          line-height: 70px !important;
+          width: 72px !important;
+          height: 72px !important;
+          line-height: 72px !important;
           border: none !important;
+          margin-top: -36px !important;
+          margin-left: -36px !important;
+        }
+        .vjs-theme-custom .vjs-big-play-button:hover {
+          background: rgba(108, 71, 255, 1) !important;
         }
         .vjs-theme-custom .vjs-control-bar {
-          background: linear-gradient(transparent, rgba(0,0,0,0.9)) !important;
-          height: 48px !important;
+          background: linear-gradient(transparent, rgba(0, 0, 0, 0.92)) !important;
+          height: 52px !important;
+          padding: 0 8px !important;
         }
-        .vjs-theme-custom .vjs-play-progress {
+        .vjs-theme-custom .vjs-play-progress,
+        .vjs-theme-custom .vjs-play-progress::before {
           background: #6C47FF !important;
+        }
+        .vjs-theme-custom .vjs-slider {
+          background: rgba(255, 255, 255, 0.2) !important;
+        }
+        .vjs-theme-custom .vjs-volume-level {
+          background: #6C47FF !important;
+        }
+        :global(.vjs-error .vjs-error-display) {
+          display: none !important;
         }
       `}</style>
     </>
