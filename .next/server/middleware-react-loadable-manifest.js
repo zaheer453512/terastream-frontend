@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST="{\"pages\\\\watch.tsx -> video.js\":{\"id\":\"pages\\\\watch.tsx -> video.js\",\"files\":[\"static/chunks/node_modules_video_js_dist_video_es_js.js\"]}}"
