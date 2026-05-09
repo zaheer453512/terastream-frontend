@@ -76,8 +76,14 @@ export default function WatchPage() {
           vhs: { overrideNative: true },
         },
         playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
-        sources: [{ src: fileData.streamUrl, type: 'application/x-mpegURL' }],
-        tracks: fileData.subtitles?.map(s => ({
+sources: [
+  {
+    src: `${process.env.NEXT_PUBLIC_API_URL}/api/download?id=${encodeURIComponent(fileData.streamUrl)}`,
+    type: fileData.streamUrl.includes('.m3u8')
+      ? 'application/x-mpegURL'
+      : 'video/mp4',
+  },
+],        tracks: fileData.subtitles?.map(s => ({
           kind: 'subtitles',
           src: s.url,
           srclang: s.lang,
