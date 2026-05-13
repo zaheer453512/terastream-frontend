@@ -78,10 +78,10 @@ export default function WatchPage() {
   useEffect(() => {
     if (!fileData || !playerRef.current) return;
 
-    // Use streamUrl if available, fall back to downloadUrl.
-    // Pass the direct URL — never wrap in a proxy for streaming.
-    const playbackUrl = fileData.streamUrl || fileData.downloadUrl;
-    const mimeType    = detectMimeType(playbackUrl);
+    // Use the download proxy with inline=true to proxy the stream and bypass CORS/Referer issues
+    const rawUrl = fileData.streamUrl || fileData.downloadUrl;
+    const playbackUrl = `/api/download?id=${encodeURIComponent(rawUrl)}&inline=true`;
+    const mimeType    = detectMimeType(rawUrl);
 
     const sources = [
       { src: playbackUrl, type: mimeType },
