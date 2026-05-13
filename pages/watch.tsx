@@ -78,8 +78,9 @@ export default function WatchPage() {
   useEffect(() => {
     if (!fileData || !playerRef.current) return;
 
-    // Use the download proxy with inline=true to proxy the stream and bypass CORS/Referer issues
-    const rawUrl = fileData.streamUrl || fileData.downloadUrl;
+    // Proxy the MP4 download URL for streaming to avoid M3U8 segment CORS/Referer blocks
+    // Prioritizing fileData.downloadUrl ensures a single, seekable MP4 file is used.
+    const rawUrl = fileData.downloadUrl || fileData.streamUrl;
     const playbackUrl = `/api/download?id=${encodeURIComponent(rawUrl)}&inline=true`;
     const mimeType    = detectMimeType(rawUrl);
 
